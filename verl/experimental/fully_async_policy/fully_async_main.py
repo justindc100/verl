@@ -30,6 +30,28 @@ from verl.trainer.ppo.utils import Role, need_reference_policy
 from verl.utils.fs import copy_to_local
 
 
+def _validate_fully_async_lora_config(config):
+    """Validate minimal LoRA support matrix for fully-async mode."""
+    lora_cfg = config.actor_rollout_ref.model.get("lora", {})
+    lora_rank = lora_cfg.get("rank", 0)
+    if lora_rank <= 0:
+        lora_rank = config.actor_rollout_ref.model.get("lora_rank", 0)
+
+    lora_enabled = lora_rank > 0 or config.actor_rollout_ref.model.get("lora_adapter_path") is not None
+    if not lora_enabled:
+        return
+
+    if not lora_cfg.get("merge", False):
+        raise ValueError(
+            "fully_async LoRA v1 only supports merged LoRA (model.lora.merge=true) with sync_rollout_weights."
+        )
+
+    if config.async_training.checkpoint_engine.enable:
+        raise ValueError(
+            "fully_async LoRA v1 requires checkpoint_engine disabled; only sync_rollout_weights is supported."
+        )
+
+
 def create_resource_pool_manager(config, roles: list) -> ResourcePoolManager:
     """
     Create resource pool manager
@@ -151,6 +173,7 @@ class FullyAsyncTaskRunner:
         print(f"[ASYNC MAIN] TaskRunner hostname: {socket.gethostname()}, PID: {os.getpid()}")
         pprint(OmegaConf.to_container(config, resolve=True))
         OmegaConf.resolve(config)
+        _validate_fully_async_lora_config(config)
 
         print("[ASYNC MAIN] Initializing model and tokenizer...")
         local_path = copy_to_local(
