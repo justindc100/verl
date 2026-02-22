@@ -30,6 +30,25 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+class _ServerAdapterInferenceModelProxy:
+    """Expose a ``load_weights`` API for ServerAdapter-based rollouts.
+
+    Fully-async sync code paths expect an object with ``load_weights``. vLLM
+    ServerAdapter does not expose ``inference_engine`` directly, but it can
+    receive per-tensor weights via ``update_weights``.
+    """
+
+    def __init__(self, rollout, run_async_safely):
+        self._rollout = rollout
+        self._run_async_safely = run_async_safely
+
+    def load_weights(self, named_tensors):
+        if not named_tensors:
+            return
+        # Bridge sync call sites to ServerAdapter's async IPC update path.
+        self._run_async_safely(self._rollout.update_weights(iter(named_tensors)))
+
+
 class BaseDetachNcclSync:
     _bucket_size_mb = 1024.0
     _sync_history = []
@@ -145,7 +164,7 @@ class BaseDetachNcclSync:
         )
 
     @staticmethod
-    def get_inference_model(rollout):
+    def get_inference_model(rollout, run_async_safely=None):
         """
         Get models according to different types of inference_engine
         Args:
@@ -153,17 +172,26 @@ class BaseDetachNcclSync:
         Returns:
             model: model object (for vllm) or rollout object itself (for sglang)
         """
-        inference_engine = rollout.inference_engine
-        if hasattr(inference_engine, "llm_engine"):
-            inference_model = inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
-        elif hasattr(inference_engine, "worker"):
-            inference_model = inference_engine.worker.model_runner.model
-        else:
+        if hasattr(rollout, "inference_engine"):
+            inference_engine = rollout.inference_engine
+            if hasattr(inference_engine, "llm_engine"):
+                return inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
+            if hasattr(inference_engine, "worker"):
+                return inference_engine.worker.model_runner.model
             raise AttributeError(
                 f"Unsupported inference_engine type: {type(inference_engine)}. "
                 f"Expected LLM (with llm_engine attribute) or WorkerWrapperBase (with worker attribute)."
             )
-        return inference_model
+
+        # ServerAdapter path (async vLLM): expose a load_weights-compatible proxy.
+        if hasattr(rollout, "update_weights"):
+            if run_async_safely is None:
+                raise ValueError("run_async_safely is required for ServerAdapter-based rollout weight sync")
+            return _ServerAdapterInferenceModelProxy(rollout=rollout, run_async_safely=run_async_safely)
+
+        raise AttributeError(
+            f"Unsupported rollout type: {type(rollout)}. Expected rollout.inference_engine or rollout.update_weights."
+        )
 
     def _sync_sglang_weights(self, inference_model, params, sync_group_name):
         bucket_size_bytes = int(self.get_bucket_size_mb() * 1024 * 1024)

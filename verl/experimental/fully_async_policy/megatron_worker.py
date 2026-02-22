@@ -65,10 +65,13 @@ class DetachNcclSync(BaseDetachNcclSync, AsyncActorRolloutRefWorker):
         inference_model = None
         if self._is_rollout and (not self._is_actor):
             if rollout_name == "vllm":
-                inference_model = BaseDetachNcclSync.get_inference_model(self.rollout)
-                from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
+                inference_model = BaseDetachNcclSync.get_inference_model(
+                    self.rollout, run_async_safely=self._run_async_safely
+                )
+                if hasattr(self.rollout, "inference_engine"):
+                    from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 
-                patch_vllm_moe_model_weight_loader(inference_model)
+                    patch_vllm_moe_model_weight_loader(inference_model)
             elif rollout_name == "sglang":
                 inference_model = self.rollout._engine
                 if inference_model is None:
@@ -176,10 +179,13 @@ class DetachNcclSync(BaseDetachNcclSync, AsyncActorRolloutRefWorker):
         inference_model = None
         if self._is_rollout and (not self._is_actor):
             if rollout_name == "vllm":
-                inference_model = BaseDetachNcclSync.get_inference_model(self.rollout)
-                from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
+                inference_model = BaseDetachNcclSync.get_inference_model(
+                    self.rollout, run_async_safely=self._run_async_safely
+                )
+                if hasattr(self.rollout, "inference_engine"):
+                    from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 
-                patch_vllm_moe_model_weight_loader(inference_model)
+                    patch_vllm_moe_model_weight_loader(inference_model)
             elif rollout_name == "sglang":
                 inference_model = self.rollout._engine
                 # For ServerAdapter, _engine might be None and needs async initialization
