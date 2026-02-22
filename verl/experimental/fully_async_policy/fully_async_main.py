@@ -46,10 +46,10 @@ def _validate_fully_async_lora_config(config):
             "fully_async LoRA v1 only supports merged LoRA (model.lora.merge=true) with sync_rollout_weights."
         )
 
-    if config.async_training.checkpoint_engine.enable:
-        raise ValueError(
-            "fully_async LoRA v1 requires checkpoint_engine disabled; only sync_rollout_weights is supported."
-        )
+    # NOTE:
+    # We allow checkpoint_engine for merged LoRA in fully-async mode. In large models,
+    # this path is often more robust than per-tensor sync_rollout_weights and can avoid
+    # prolonged vLLM SHM broadcast stalls during weight loading.
 
 
 def create_resource_pool_manager(config, roles: list) -> ResourcePoolManager:

@@ -128,7 +128,8 @@ class ParameterSynchronizer:
         pause_time = time.time()
 
         # sync weights
-        # fully async LoRA v1 forces sync_rollout_weights path to keep implementation minimal.
+        # fully async LoRA v1 requires merged LoRA, but can use either sync path.
+        # Prefer checkpoint_engine when enabled for better robustness on large models.
         lora_cfg = self.config.actor_rollout_ref.model.get("lora", {})
         lora_rank = lora_cfg.get("rank", 0)
         if lora_rank <= 0:
@@ -139,7 +140,10 @@ class ParameterSynchronizer:
         rollout_name = getattr(self.config.actor_rollout_ref.rollout, "name", None)
         use_checkpoint_engine = self.config.async_training.checkpoint_engine.enable and rollout_name != "sglang"
 
-        if lora_enabled and merged_lora:
+        if lora_enabled and merged_lora and use_checkpoint_engine:
+            self.actor_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name)
+            ray.get(self.rollout_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name))
+        elif lora_enabled and merged_lora:
             self.actor_wg.sync_rollout_weights(self.sync_group_name)
             ray.get(self.rollout_wg.sync_rollout_weights(self.sync_group_name))
         elif use_checkpoint_engine:
