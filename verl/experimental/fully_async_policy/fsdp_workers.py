@@ -32,6 +32,8 @@ from verl.utils.device import (
 from verl.utils.fsdp_utils import (
     fsdp_version,
     load_fsdp_model_to_gpu,
+    merged_lora_context,
+    normalize_peft_param_name,
     offload_fsdp_model_to_cpu,
 )
 from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker, CriticWorker
@@ -206,7 +208,16 @@ class DetachActorWorker(DetachNcclSync):
 
     def _get_actor_params(self):
         assert self._is_actor
-        params = self.actor_module_fsdp.state_dict()
+        peft_model = getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
+        merge_lora = self.config.model.get("lora", {}).get("merge", False)
+
+        if merge_lora and hasattr(peft_model, "peft_config"):
+            with merged_lora_context(self.actor_module_fsdp, backup_adapters=True):
+                params = self.actor_module_fsdp.state_dict()
+                params = normalize_peft_param_name(params)
+        else:
+            params = self.actor_module_fsdp.state_dict()
+
         from verl.utils.model import convert_weight_keys
 
         params = convert_weight_keys(

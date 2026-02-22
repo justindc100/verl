@@ -53,8 +53,18 @@ class ParameterSynchronizer:
         self._init_weights_info()
         self._init_sync_group()
 
-        if self.config.async_training.checkpoint_engine.enable:
+        if self._is_checkpoint_engine_enabled():
             self._init_actor_rollout_checkpoint_engine()
+
+    def _is_checkpoint_engine_enabled(self) -> bool:
+        """Resolve checkpoint-engine enable flag from async and actor_rollout_ref scopes.
+
+        Some external configs set checkpoint_engine under actor_rollout_ref while fully-async
+        examples use async_training.checkpoint_engine. Support both to avoid silent fallback.
+        """
+        async_ckpt_enable = self.config.async_training.get("checkpoint_engine", {}).get("enable", False)
+        arr_ckpt_enable = self.config.actor_rollout_ref.get("checkpoint_engine", {}).get("enable", False)
+        return bool(async_ckpt_enable or arr_ckpt_enable)
 
     def get_current_param_version(self) -> int:
         """Get current parameter version number"""
@@ -128,17 +138,37 @@ class ParameterSynchronizer:
         pause_time = time.time()
 
         # sync weights
-        # For sglang, always use sync_rollout_weights instead of sync_rollout_weights_by_checkpoint
+        # fully async LoRA v1 requires merged LoRA, but can use either sync path.
+        # Prefer checkpoint_engine when enabled for better robustness on large models.
+        lora_cfg = self.config.actor_rollout_ref.model.get("lora", {})
+        lora_rank = lora_cfg.get("rank", 0)
+        if lora_rank <= 0:
+            lora_rank = self.config.actor_rollout_ref.model.get("lora_rank", 0)
+        lora_enabled = lora_rank > 0 or self.config.actor_rollout_ref.model.get("lora_adapter_path") is not None
+        merged_lora = lora_cfg.get("merge", False)
 
-        # TODO use checkpoint engine for sglang rollout
-        # rollout_name = getattr(self.config.actor_rollout_ref.rollout, "name", None)
-        # use_checkpoint_engine = self.config.async_training.checkpoint_engine.enable and rollout_name != "sglang"
-        # if use_checkpoint_engine:
-        #     self.actor_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name)
-        #     ray.get(self.rollout_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name))
-        # else:
-        #     self.actor_wg.sync_rollout_weights(self.sync_group_name)
-        #     ray.get(self.rollout_wg.sync_rollout_weights(self.sync_group_name))
+        rollout_name = getattr(self.config.actor_rollout_ref.rollout, "name", None)
+        checkpoint_engine_enabled = self._is_checkpoint_engine_enabled()
+        use_checkpoint_engine = checkpoint_engine_enabled and rollout_name != "sglang"
+
+        print(
+            "[ParameterSynchronizer] sync routing: "
+            f"rollout_name={rollout_name}, checkpoint_engine_enabled={checkpoint_engine_enabled}, "
+            f"use_checkpoint_engine={use_checkpoint_engine}, lora_enabled={lora_enabled}, merged_lora={merged_lora}"
+        )
+
+        if lora_enabled and merged_lora and use_checkpoint_engine:
+            self.actor_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name)
+            ray.get(self.rollout_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name))
+        elif lora_enabled and merged_lora:
+            self.actor_wg.sync_rollout_weights(self.sync_group_name)
+            ray.get(self.rollout_wg.sync_rollout_weights(self.sync_group_name))
+        elif use_checkpoint_engine:
+            self.actor_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name)
+            ray.get(self.rollout_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name))
+        else:
+            self.actor_wg.sync_rollout_weights(self.sync_group_name)
+            ray.get(self.rollout_wg.sync_rollout_weights(self.sync_group_name))
 
         end_time = time.time()
         print(
