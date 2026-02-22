@@ -128,17 +128,30 @@ class ParameterSynchronizer:
         pause_time = time.time()
 
         # sync weights
-        # For sglang, always use sync_rollout_weights instead of sync_rollout_weights_by_checkpoint
+        # fully async LoRA v1 requires merged LoRA, but can use either sync path.
+        # Prefer checkpoint_engine when enabled for better robustness on large models.
+        lora_cfg = self.config.actor_rollout_ref.model.get("lora", {})
+        lora_rank = lora_cfg.get("rank", 0)
+        if lora_rank <= 0:
+            lora_rank = self.config.actor_rollout_ref.model.get("lora_rank", 0)
+        lora_enabled = lora_rank > 0 or self.config.actor_rollout_ref.model.get("lora_adapter_path") is not None
+        merged_lora = lora_cfg.get("merge", False)
 
-        # TODO use checkpoint engine for sglang rollout
-        # rollout_name = getattr(self.config.actor_rollout_ref.rollout, "name", None)
-        # use_checkpoint_engine = self.config.async_training.checkpoint_engine.enable and rollout_name != "sglang"
-        # if use_checkpoint_engine:
-        #     self.actor_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name)
-        #     ray.get(self.rollout_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name))
-        # else:
-        #     self.actor_wg.sync_rollout_weights(self.sync_group_name)
-        #     ray.get(self.rollout_wg.sync_rollout_weights(self.sync_group_name))
+        rollout_name = getattr(self.config.actor_rollout_ref.rollout, "name", None)
+        use_checkpoint_engine = self.config.async_training.checkpoint_engine.enable and rollout_name != "sglang"
+
+        if lora_enabled and merged_lora and use_checkpoint_engine:
+            self.actor_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name)
+            ray.get(self.rollout_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name))
+        elif lora_enabled and merged_lora:
+            self.actor_wg.sync_rollout_weights(self.sync_group_name)
+            ray.get(self.rollout_wg.sync_rollout_weights(self.sync_group_name))
+        elif use_checkpoint_engine:
+            self.actor_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name)
+            ray.get(self.rollout_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name))
+        else:
+            self.actor_wg.sync_rollout_weights(self.sync_group_name)
+            ray.get(self.rollout_wg.sync_rollout_weights(self.sync_group_name))
 
         end_time = time.time()
         print(
